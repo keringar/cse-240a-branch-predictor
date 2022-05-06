@@ -12,9 +12,9 @@
 //
 // TODO:Student Information
 //
-const char *studentName = "Gandhar Deshpande";
-const char *studentID   = "A59005457";
-const char *email       = "gdeshpande@ucsd.edu";
+const char *studentName = "Warren Hu";
+const char *studentID   = "A15154462";
+const char *email       = "wsh003@ucsd.edu";
 
 //------------------------------------//
 //      Predictor Configuration       //
@@ -29,18 +29,27 @@ int ghistoryBits = 14; // Number of bits used for Global History
 int bpType;       // Branch Prediction Type
 int verbose;
 
+//alpha-21264 tournament predictor uses bottom 10 bits of PC for local history
+const int tLocalPCBits = 10;
+const int tGlobalHistoryBits = 12;
 
 //------------------------------------//
 //      Predictor Data Structures     //
 //------------------------------------//
 
-//
-//TODO: Add your own Branch Predictor data structures here
-//
 //gshare
 uint8_t *bht_gshare;
 uint64_t ghistory;
 
+//alpha-21264 tournament predictor
+//https://acg.cis.upenn.edu/milom/cis501-Fall09/papers/Alpha21264.pdf
+unsigned int tHistoryTable; // past 12 branch histories
+unsigned int* tLocalPHT; // 1024 entries
+unsigned int* tLocalCounters; // 1024 entries
+unsigned int* tGlobalCounters; // 4096 entries
+unsigned int* tChooserCounters; // 4096 entries
+
+// BATAGE: https://dl.acm.org/doi/fullHtml/10.1145/3226098
 
 //------------------------------------//
 //        Predictor Functions         //
@@ -119,7 +128,200 @@ cleanup_gshare() {
   free(bht_gshare);
 }
 
+void init_tournament() {
+  int localBits = 1 << tLocalPCBits;
 
+  tLocalPHT = (unsigned int*)malloc(localBits * sizeof(unsigned int));
+  tLocalCounters = (unsigned int*)malloc(localBits * sizeof(unsigned int));
+
+  for (int i = 0; i <= localBits; i++) {
+    tLocalPHT[i] = 0; // bits 0000000000
+    tLocalCounters[i] = WN;
+  } 
+
+  int globalBits = 1 << tGlobalHistoryBits;
+
+  tGlobalCounters = (unsigned int*)malloc(globalBits * sizeof(unsigned int));
+  tChooserCounters = (unsigned int*)malloc(globalBits * sizeof(unsigned int));
+
+  for (int i = 0; i <= globalBits; i++) {
+    tGlobalCounters[i] = WN;
+    tChooserCounters[i] = WN;
+  } 
+
+  tHistoryTable = 0;
+}
+
+uint8_t tournament_predict(uint32_t pc) {
+  unsigned int global_history_bits = 1 << tGlobalHistoryBits;
+  unsigned int global_history_lower = tHistoryTable & (global_history_bits - 1);
+
+  unsigned int local_pc_bits = 1 << tLocalPCBits;
+  unsigned int pc_lower = pc & (local_pc_bits - 1);
+
+  switch (tChooserCounters[global_history_lower]) {
+    case SN:
+    case WN:
+      // arbitrarily assign not taken in chooser to local predictor
+      switch (tLocalCounters[tLocalPHT[pc_lower]]) {
+        case SN:
+        case WN:
+          return NOTTAKEN;
+        case ST:
+        case WT:
+          return TAKEN;
+        default:
+          printf("Undefined state in tournament local table");
+          return NOTTAKEN;
+      }
+      break;
+    case ST:
+    case WT:
+      // arbitrarily assign taken in chooser to global predictor
+      switch (tGlobalCounters[global_history_lower]) {
+        case SN:
+        case WN:
+          return NOTTAKEN;
+        case ST:
+        case WT:
+          return TAKEN;
+        default:
+          printf("Undefined state in tournament global table");
+          return NOTTAKEN;
+      }
+      break;
+    default:
+      printf("Undefined state in chooser table");
+      return NOTTAKEN;
+  }
+}
+
+void train_tournament(uint32_t pc, uint8_t outcome) {
+  unsigned int global_history_bits = 1 << tGlobalHistoryBits;
+  unsigned int global_history_lower = tHistoryTable & (global_history_bits - 1);
+
+  unsigned int local_pc_bits = 1 << tLocalPCBits;
+  unsigned int pc_lower = pc & (local_pc_bits - 1);
+
+  // get local predictor choice and update counter
+  unsigned int local_predictor_choice;
+  switch (tLocalCounters[tLocalPHT[pc_lower]]) {
+    case SN:
+      local_predictor_choice = NOTTAKEN;    
+
+      if (outcome == TAKEN) {
+        tLocalCounters[tLocalPHT[pc_lower]]++;
+      } 
+      break;
+    case WN:
+      local_predictor_choice = NOTTAKEN;
+
+      if (outcome == TAKEN) {
+        tLocalCounters[tLocalPHT[pc_lower]]++;
+      } else if (outcome == NOTTAKEN) {
+        tLocalCounters[tLocalPHT[pc_lower]]--;
+      }
+      break;
+    case ST:
+      local_predictor_choice = TAKEN;
+
+      if (outcome == NOTTAKEN) {
+        tLocalCounters[tLocalPHT[pc_lower]]--;
+      }
+      break;
+    case WT:
+      local_predictor_choice = TAKEN;
+
+      if (outcome == TAKEN) {
+        tLocalCounters[tLocalPHT[pc_lower]]++;
+      } else if (outcome == NOTTAKEN) {
+        tLocalCounters[tLocalPHT[pc_lower]]--;
+      }
+      break;
+    default:
+      printf("Undefined state in tournament local table");
+      local_predictor_choice = NOTTAKEN;
+  }
+
+  // get global predictor choice and update counter
+  unsigned int global_predictor_choice;
+  switch (tGlobalCounters[global_history_lower]) {
+    case SN:
+      global_predictor_choice = NOTTAKEN;
+      
+      if (outcome == TAKEN) {
+        tGlobalCounters[global_history_lower]++;
+      } 
+      break;
+    case WN:
+      global_predictor_choice = NOTTAKEN;
+
+      if (outcome == TAKEN) {
+        tGlobalCounters[global_history_lower]++;
+      } else if (outcome == NOTTAKEN) {
+        tGlobalCounters[global_history_lower]--;
+      }
+      break;
+    case ST:
+      global_predictor_choice = TAKEN;
+
+      if (outcome == NOTTAKEN) {
+        tGlobalCounters[global_history_lower]--;
+      } 
+      break;
+    case WT:
+      global_predictor_choice = TAKEN;
+
+      if (outcome == TAKEN) {
+        tGlobalCounters[global_history_lower]++;
+      } else if (outcome == NOTTAKEN) {
+        tGlobalCounters[global_history_lower]--;
+      }
+      break;
+    default:
+      printf("Undefined state in tournament global table");
+      global_predictor_choice = NOTTAKEN;
+  }
+
+  // compare actual outcome to both predictor choices and update choooser accordingly
+  if (local_predictor_choice == NOTTAKEN && global_predictor_choice == NOTTAKEN && outcome == NOTTAKEN) {
+    // both right, dont change anything
+  } else if (local_predictor_choice == NOTTAKEN && global_predictor_choice == NOTTAKEN && outcome == TAKEN) {
+    // both wrong, dont change anything
+  } else if (local_predictor_choice == NOTTAKEN && global_predictor_choice == TAKEN && outcome == NOTTAKEN) {
+    // local predictor is correct, bias chooser towards not taken
+    if (tChooserCounters[global_history_lower] > SN) {
+      tChooserCounters[global_history_lower]--;
+    }
+  } else if (local_predictor_choice == NOTTAKEN && global_predictor_choice == TAKEN && outcome == TAKEN) {
+    // global predictor is correct, bias chooser towards taken
+    if (tChooserCounters[global_history_lower] < ST) {
+      tChooserCounters[global_history_lower]++;
+    }
+  } else if (local_predictor_choice == TAKEN && global_predictor_choice == NOTTAKEN && outcome == NOTTAKEN) {
+    // global predictor is correct, bias chooser towards taken
+    if (tChooserCounters[global_history_lower] < ST) {
+      tChooserCounters[global_history_lower]++;
+    }
+  } else if (local_predictor_choice == TAKEN && global_predictor_choice == NOTTAKEN && outcome == TAKEN) {
+    // local predictor is correct, bias chooser towards not taken
+    if (tChooserCounters[global_history_lower] > SN) {
+      tChooserCounters[global_history_lower]--;
+    }
+  } else if (local_predictor_choice == TAKEN && global_predictor_choice == TAKEN && outcome == NOTTAKEN) {
+    // both wrong, dont change anything
+  } else if (local_predictor_choice == TAKEN && global_predictor_choice == TAKEN && outcome == TAKEN) {
+    // both right, dont change anything
+  } else {
+    printf("Undefined state in tournament predictor choices");
+  }
+
+  // update global history
+  tHistoryTable = (tHistoryTable << 1) | outcome;
+
+  // update local pattern history table
+  tLocalPHT[pc_lower] = ((tLocalPHT[pc_lower] << 1) | outcome) & (local_pc_bits - 1);
+}
 
 void
 init_predictor()
@@ -130,6 +332,8 @@ init_predictor()
       init_gshare();
       break;
     case TOURNAMENT:
+      init_tournament();
+      break;
     case CUSTOM:
     default:
       break;
@@ -152,6 +356,7 @@ make_prediction(uint32_t pc)
     case GSHARE:
       return gshare_predict(pc);
     case TOURNAMENT:
+      return tournament_predict(pc);
     case CUSTOM:
     default:
       break;
@@ -175,6 +380,7 @@ train_predictor(uint32_t pc, uint8_t outcome)
     case GSHARE:
       return train_gshare(pc, outcome);
     case TOURNAMENT:
+      return train_tournament(pc, outcome);
     case CUSTOM:
     default:
       break;
