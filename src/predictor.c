@@ -29,9 +29,11 @@ int ghistoryBits = 14; // Number of bits used for Global History
 int bpType;       // Branch Prediction Type
 int verbose;
 
-//alpha-21264 tournament predictor uses bottom 10 bits of PC for local history
-const int tLocalPCBits = 10;
+// the alpha-21264 tournament predictor paper uses bottom 10 bits of PC for local history but we can
+// bump up the numbers to make it use up to 32 kilobits
+const int tLocalPCBits = 12;
 const int tGlobalHistoryBits = 12;
+const int tChooserHistoryBits = 12;
 
 //------------------------------------//
 //      Predictor Data Structures     //
@@ -43,11 +45,15 @@ uint64_t ghistory;
 
 //alpha-21264 tournament predictor
 //https://acg.cis.upenn.edu/milom/cis501-Fall09/papers/Alpha21264.pdf
+//   32 bits for PC
+// + 12 bits for global branch history
 unsigned int tHistoryTable; // past 12 branch histories
-unsigned int* tLocalPHT; // 1024 entries
-unsigned int* tLocalCounters; // 1024 entries
-unsigned int* tGlobalCounters; // 4096 entries
-unsigned int* tChooserCounters; // 4096 entries
+
+// 16384 entries * 2 bits each = 32768 bits
+unsigned int* tLocalPHT; // 4096 entries (2^12)
+unsigned int* tLocalCounters; // 4096 entries (2^12)
+unsigned int* tGlobalCounters; // 4096 entries (2^12)
+unsigned int* tChooserCounters; // 4096 entries (2^12)
 
 // BATAGE: https://dl.acm.org/doi/fullHtml/10.1145/3226098
 
@@ -128,6 +134,8 @@ cleanup_gshare() {
   free(bht_gshare);
 }
 
+// alpha tournament
+
 void init_tournament() {
   int localBits = 1 << tLocalPCBits;
 
@@ -140,12 +148,16 @@ void init_tournament() {
   } 
 
   int globalBits = 1 << tGlobalHistoryBits;
+  int chooserBits = 1 << tChooserHistoryBits;
 
   tGlobalCounters = (unsigned int*)malloc(globalBits * sizeof(unsigned int));
-  tChooserCounters = (unsigned int*)malloc(globalBits * sizeof(unsigned int));
+  tChooserCounters = (unsigned int*)malloc(chooserBits * sizeof(unsigned int));
 
   for (int i = 0; i <= globalBits; i++) {
     tGlobalCounters[i] = WN;
+  } 
+
+  for (int i = 0; i <= chooserBits; i++) {
     tChooserCounters[i] = WN;
   } 
 
@@ -154,12 +166,14 @@ void init_tournament() {
 
 uint8_t tournament_predict(uint32_t pc) {
   unsigned int global_history_bits = 1 << tGlobalHistoryBits;
+  unsigned int chooser_history_bits = 1 << tChooserHistoryBits;
   unsigned int global_history_lower = tHistoryTable & (global_history_bits - 1);
+  unsigned int chooser_history_lower = tHistoryTable & (chooser_history_bits - 1);
 
   unsigned int local_pc_bits = 1 << tLocalPCBits;
   unsigned int pc_lower = pc & (local_pc_bits - 1);
 
-  switch (tChooserCounters[global_history_lower]) {
+  switch (tChooserCounters[chooser_history_lower]) {
     case SN:
     case WN:
       // arbitrarily assign not taken in chooser to local predictor
@@ -198,7 +212,9 @@ uint8_t tournament_predict(uint32_t pc) {
 
 void train_tournament(uint32_t pc, uint8_t outcome) {
   unsigned int global_history_bits = 1 << tGlobalHistoryBits;
+  unsigned int chooser_history_bits = 1 << tChooserHistoryBits;
   unsigned int global_history_lower = tHistoryTable & (global_history_bits - 1);
+  unsigned int chooser_history_lower = tHistoryTable & (chooser_history_bits - 1);
 
   unsigned int local_pc_bits = 1 << tLocalPCBits;
   unsigned int pc_lower = pc & (local_pc_bits - 1);
@@ -290,23 +306,23 @@ void train_tournament(uint32_t pc, uint8_t outcome) {
     // both wrong, dont change anything
   } else if (local_predictor_choice == NOTTAKEN && global_predictor_choice == TAKEN && outcome == NOTTAKEN) {
     // local predictor is correct, bias chooser towards not taken
-    if (tChooserCounters[global_history_lower] > SN) {
-      tChooserCounters[global_history_lower]--;
+    if (tChooserCounters[chooser_history_lower] > SN) {
+      tChooserCounters[chooser_history_lower]--;
     }
   } else if (local_predictor_choice == NOTTAKEN && global_predictor_choice == TAKEN && outcome == TAKEN) {
     // global predictor is correct, bias chooser towards taken
-    if (tChooserCounters[global_history_lower] < ST) {
-      tChooserCounters[global_history_lower]++;
+    if (tChooserCounters[chooser_history_lower] < ST) {
+      tChooserCounters[chooser_history_lower]++;
     }
   } else if (local_predictor_choice == TAKEN && global_predictor_choice == NOTTAKEN && outcome == NOTTAKEN) {
     // global predictor is correct, bias chooser towards taken
-    if (tChooserCounters[global_history_lower] < ST) {
-      tChooserCounters[global_history_lower]++;
+    if (tChooserCounters[chooser_history_lower] < ST) {
+      tChooserCounters[chooser_history_lower]++;
     }
   } else if (local_predictor_choice == TAKEN && global_predictor_choice == NOTTAKEN && outcome == TAKEN) {
     // local predictor is correct, bias chooser towards not taken
-    if (tChooserCounters[global_history_lower] > SN) {
-      tChooserCounters[global_history_lower]--;
+    if (tChooserCounters[chooser_history_lower] > SN) {
+      tChooserCounters[chooser_history_lower]--;
     }
   } else if (local_predictor_choice == TAKEN && global_predictor_choice == TAKEN && outcome == NOTTAKEN) {
     // both wrong, dont change anything
