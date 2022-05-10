@@ -69,10 +69,10 @@ uint16_t* tage_table[5];
 const int tage_ti_tag_bits = 10;
 const int tage_ti_counter_size = 2;
 const int tage_t0_pc_bits = 11;
-const int tage_t1_history_bits = 8;
-const int tage_t2_history_bits = 16;
-const int tage_t3_history_bits = 32;
-const int tage_t4_history_bits = 64;
+const int tage_t1_history_bits = 5;  // <= 9 bits
+const int tage_t2_history_bits = 18; // <= 18 bits
+const int tage_t3_history_bits = 27; // <= 36 bits
+const int tage_t4_history_bits = 63; // <= 64 bits
 const int tage_table_size_bits = 9;
 const int tage_num_components = 5;
 
@@ -89,52 +89,101 @@ uint16_t tage_calculated_tags[5]; // 0 + 4*10 = 40 bits
 //        Helper Functions            //
 //------------------------------------//
 
+// definitions for BATAGE confidence levels
+#define LOW_CONF 2
+#define MED_CONF 1
+#define HIGH_CONF 0
+
+// bit packing helper macros
+#define GET_T(tage_entry) (tage_entry & ((1 << tage_ti_counter_size) - 1))
+#define GET_NT(tage_entry) ((tage_entry >> tage_ti_counter_size) & ((1 << tage_ti_counter_size) - 1))
+#define GET_TAG(tage_entry) ((tage_entry >> (tage_ti_counter_size * 2)) & ((1 << tage_ti_tag_bits) - 1))
+#define MAKE_ENTRY(tage_tag, tage_t_counter, tage_nt_counter) (((tage_tag & ((1 << tage_ti_tag_bits) - 1)) << (tage_ti_counter_size * 2)) | ((tage_nt_counter & ((1 << tage_ti_counter_size) - 1)) << tage_ti_counter_size) | (tage_t_counter & ((1 << tage_ti_counter_size) - 1)))
+
 // see section 2.1 of https://jilp.org/vol7/v7paper10.pdf for details on the hashing
 void tage_calculate_indices_and_tags(uint32_t pc, uint64_t global_history) {
   tage_calculated_indices[0] = pc & ((1 << tage_t0_pc_bits) - 1);
   tage_calculated_tags[0] = 0; // table 0 is tagless bimodal
 
-  // see section 2.1 of https://jilp.org/vol7/v7paper10.pdf
   unsigned int tage_table_size_mask = (1 << tage_table_size_bits) - 1;
   unsigned int tage_tag_size_mask = (1 << tage_ti_tag_bits) - 1;
 
   unsigned int tage_t1_history_mask = (1 << tage_t1_history_bits) - 1;
   unsigned int tage_t1_history = global_history & tage_t1_history_mask;
-  tage_calculated_indices[1] = (pc ^ tage_t1_history) & tage_table_size_mask;
-  tage_calculated_tags[1] = (pc ^ tage_t1_history) & tage_tag_size_mask;
+  tage_calculated_indices[1] = ((pc >> tage_table_size_bits) ^
+                                (pc) ^
+                                (tage_t1_history)
+                               ) & tage_table_size_mask;
+  tage_calculated_tags[1] = ((pc) ^
+                             (tage_t1_history) ^
+                             ((tage_t1_history >> 1) << 1)
+                            ) & tage_tag_size_mask;
 
   unsigned int tage_t2_history_mask = (1 << tage_t2_history_bits) - 1;
   unsigned int tage_t2_history = global_history & tage_t2_history_mask; // 16 bits. need to fold down to 9 index bits. 2 folds
-  tage_calculated_indices[2] = (pc ^ (tage_t2_history) ^ (tage_t2_history >> tage_table_size_bits)) & tage_table_size_mask;
-  tage_calculated_tags[2] = (pc ^ (tage_t2_history) ^ (tage_t2_history >> tage_ti_tag_bits)) & tage_tag_size_mask;
+  tage_calculated_indices[2] = ((pc >> tage_table_size_bits) ^
+                                (pc) ^
+                                (tage_t2_history >> (0 * tage_table_size_bits)) ^
+                                (tage_t2_history >> (1 * tage_table_size_bits))
+                               ) & tage_table_size_mask;
+  tage_calculated_tags[2] = ((pc) ^
+                             (tage_t2_history >> (0 * tage_table_size_bits)) ^
+                             (tage_t2_history >> (1 * tage_table_size_bits)) ^
+                             ((tage_t2_history >> 1) >> (0 * tage_table_size_bits)) ^ 
+                             ((tage_t2_history >> 1) >> (1 * tage_table_size_bits))
+                            ) & tage_tag_size_mask;
 
   unsigned int tage_t3_history_mask = (1 << tage_t3_history_bits) - 1;
   unsigned int tage_t3_history = global_history & tage_t3_history_mask; // 32 bits. need to fold down to 9 index bits. 4 folds
-  tage_calculated_indices[3] = (pc ^ (tage_t3_history) ^ (tage_t3_history >> tage_table_size_bits) ^ (tage_t3_history >> (2 * tage_table_size_bits)) ^ (tage_t3_history >> (3 * tage_table_size_bits))) & tage_table_size_mask;
-  tage_calculated_tags[3] = (pc ^ (tage_t3_history) ^ (tage_t3_history >> tage_ti_tag_bits) ^ (tage_t3_history >> (2 * tage_ti_tag_bits)) ^ (tage_t3_history >> (3 * tage_ti_tag_bits))) & tage_tag_size_mask;
+  tage_calculated_indices[3] = ((pc >> tage_table_size_bits) ^
+                                (pc) ^
+                                (tage_t3_history >> (0 * tage_table_size_bits)) ^
+                                (tage_t3_history >> (1 * tage_table_size_bits)) ^
+                                (tage_t3_history >> (2 * tage_table_size_bits)) ^
+                                (tage_t3_history >> (3 * tage_table_size_bits))
+                               ) & tage_table_size_mask;
+  tage_calculated_tags[3] = ((pc) ^
+                             (tage_t3_history >> (0 * tage_table_size_bits)) ^
+                             (tage_t3_history >> (1 * tage_table_size_bits)) ^
+                             (tage_t3_history >> (2 * tage_table_size_bits)) ^
+                             (tage_t3_history >> (3 * tage_table_size_bits)) ^
+                             ((tage_t3_history >> 1) >> (0 * tage_table_size_bits)) ^ 
+                             ((tage_t3_history >> 1) >> (1 * tage_table_size_bits)) ^
+                             ((tage_t3_history >> 1) >> (2 * tage_table_size_bits)) ^ 
+                             ((tage_t3_history >> 1) >> (3 * tage_table_size_bits))
+                            ) & tage_tag_size_mask;
 
   unsigned int tage_t4_history_mask = (1 << tage_t4_history_bits) - 1;
   unsigned int tage_t4_history = global_history & tage_t4_history_mask; // 64 bits. need to fold down to 9 index bits. 8 folds
-  tage_calculated_indices[4] = (pc ^ 
-                           (tage_t4_history) ^
-                           (tage_t4_history >> (1 * tage_table_size_bits)) ^
-                           (tage_t4_history >> (2 * tage_table_size_bits)) ^
-                           (tage_t4_history >> (3 * tage_table_size_bits)) ^
-                           (tage_t4_history >> (4 * tage_table_size_bits)) ^
-                           (tage_t4_history >> (5 * tage_table_size_bits)) ^
-                           (tage_t4_history >> (6 * tage_table_size_bits)) ^
-                           (tage_t4_history >> (7 * tage_table_size_bits))
-                          ) & tage_table_size_mask;
-  tage_calculated_tags[4] = (pc ^
-                           (tage_t4_history) ^
-                           (tage_t4_history >> tage_ti_tag_bits) ^
-                           (tage_t4_history >> (2 * tage_ti_tag_bits)) ^
-                           (tage_t4_history >> (3 * tage_ti_tag_bits)) ^
-                           (tage_t4_history >> (4 * tage_ti_tag_bits)) ^
-                           (tage_t4_history >> (5 * tage_ti_tag_bits)) ^
-                           (tage_t4_history >> (6 * tage_ti_tag_bits)) ^
-                           (tage_t4_history >> (7 * tage_ti_tag_bits))
-                          ) & tage_tag_size_mask;
+  tage_calculated_indices[4] = ((pc >> tage_table_size_bits) ^
+                                (pc) ^
+                                (tage_t4_history >> (0 * tage_table_size_bits)) ^
+                                (tage_t4_history >> (1 * tage_table_size_bits)) ^
+                                (tage_t4_history >> (2 * tage_table_size_bits)) ^
+                                (tage_t4_history >> (3 * tage_table_size_bits)) ^
+                                (tage_t4_history >> (4 * tage_table_size_bits)) ^
+                                (tage_t4_history >> (5 * tage_table_size_bits)) ^
+                                (tage_t4_history >> (6 * tage_table_size_bits)) ^
+                                (tage_t4_history >> (7 * tage_table_size_bits))
+                               ) & tage_table_size_mask;
+  tage_calculated_tags[4] = ((pc) ^
+                             (tage_t4_history >> (0 * tage_table_size_bits)) ^
+                             (tage_t4_history >> (1 * tage_table_size_bits)) ^
+                             (tage_t4_history >> (2 * tage_table_size_bits)) ^
+                             (tage_t4_history >> (3 * tage_table_size_bits)) ^
+                             (tage_t4_history >> (4 * tage_table_size_bits)) ^
+                             (tage_t4_history >> (5 * tage_table_size_bits)) ^
+                             (tage_t4_history >> (6 * tage_table_size_bits)) ^
+                             (tage_t4_history >> (7 * tage_table_size_bits)) ^
+                             ((tage_t4_history >> 1) >> (0 * tage_table_size_bits)) ^ 
+                             ((tage_t4_history >> 1) >> (1 * tage_table_size_bits)) ^
+                             ((tage_t4_history >> 1) >> (2 * tage_table_size_bits)) ^ 
+                             ((tage_t4_history >> 1) >> (3 * tage_table_size_bits)) ^
+                             ((tage_t4_history >> 1) >> (4 * tage_table_size_bits)) ^ 
+                             ((tage_t4_history >> 1) >> (5 * tage_table_size_bits)) ^
+                             ((tage_t4_history >> 1) >> (6 * tage_table_size_bits)) ^ 
+                             ((tage_t4_history >> 1) >> (7 * tage_table_size_bits))
+                            ) & tage_tag_size_mask;
 }
 
 // see section 4.2 of https://dl.acm.org/doi/fullHtml/10.1145/3226098
@@ -145,28 +194,45 @@ uint8_t tage_calculate_confidence(unsigned int taken_counter, unsigned int not_t
   return med | (low << 1);
 }
 
-void tage_update_counters(uint8_t outcome, uint16_t* taken, uint16_t* not_taken) {
+void tage_update_counters(uint8_t outcome, unsigned int table_idx, unsigned int entry_index) {
+  uint16_t tage_entry = tage_table[table_idx][entry_index];
+
+  uint16_t taken = GET_T(tage_entry);
+  uint16_t not_taken = GET_NT(tage_entry);
+
   if (outcome == TAKEN) {
     // taken and not_taken are 2 bit unsigned saturating counters
-    if ((*taken) < 3) {
-      (*taken)++;
-    } else if ((*not_taken) > 0) {
-      (*not_taken)--;
+    if (taken < 3) {
+      taken++;
+    } else if (not_taken > 0) {
+      not_taken--;
     }
   } else {
-    if ((*not_taken) < 3) {
-      (*not_taken)++;
+    if (not_taken < 3) {
+      not_taken++;
     } else if (taken > 0) {
-      (*taken)--;
+      taken--;
     }
   }
+
+  tage_table[table_idx][entry_index] = MAKE_ENTRY(GET_TAG(tage_entry), taken, not_taken);
 }
 
-// bit packing helper macros
-#define GET_T(tage_entry) (tage_entry & ((1 << tage_ti_counter_size) - 1))
-#define GET_NT(tage_entry) ((tage_entry >> tage_ti_counter_size) & ((1 << tage_ti_counter_size) - 1))
-#define GET_TAG(tage_entry) ((tage_entry >> (tage_ti_counter_size * 2)) & ((1 << tage_ti_tag_bits) - 1))
-#define MAKE_ENTRY(tage_tag, tage_t_counter, tage_nt_counter) (((tage_tag & ((1 << tage_ti_tag_bits) - 1)) << (tage_ti_counter_size * 2)) | ((tage_nt_counter & ((1 << tage_ti_counter_size) - 1)) << tage_ti_counter_size) | (tage_t_counter & ((1 << tage_ti_counter_size) - 1)))
+void tage_decay_counters(unsigned int table_idx, unsigned int entry_index) {
+  uint16_t tage_entry = tage_table[table_idx][entry_index];
+
+  uint16_t taken = GET_T(tage_entry);
+  uint16_t not_taken = GET_NT(tage_entry);
+
+  // if both are equal, then confidence is already LOW so no need to decay further
+  if (taken > not_taken) {
+    taken--;
+  } else if (not_taken > taken) {
+    not_taken--;
+  }
+
+  tage_table[table_idx][entry_index] = MAKE_ENTRY(GET_TAG(tage_entry), taken, not_taken);
+}
 
 //------------------------------------//
 //        Predictor Functions         //
@@ -523,7 +589,7 @@ uint8_t custom_predict(uint32_t pc) {
       tage_prediction[i] = prediction;
       tage_table_used_to_predict = 0;
     } else {
-      // tage tables
+      // use tage tables
       uint16_t tage_entry = tage_table[i][tage_calculated_indices[i]];
       
       tage_hit_confidence[i] = tage_calculate_confidence(GET_T(tage_entry), GET_NT(tage_entry));
@@ -558,17 +624,11 @@ void train_custom(uint32_t pc, uint8_t outcome) {
   // the branch direction to try and increase confidence
   for (int table_idx = tage_table_used_to_predict + 1; table_idx < tage_num_components; table_idx++) {
     if (tage_table_hit[table_idx]) {
-      uint16_t tage_entry = tage_table[table_idx][tage_calculated_indices[table_idx]];
-
-      uint16_t taken = GET_T(tage_entry);
-      uint16_t not_taken = GET_NT(tage_entry);
-      tage_update_counters(outcome, &taken, &not_taken);
-
-      tage_table[table_idx][tage_calculated_indices[table_idx]] = MAKE_ENTRY(GET_TAG(tage_entry), taken, not_taken);
+      tage_update_counters(outcome, table_idx, tage_calculated_indices[table_idx]);
     }
   }
 
-  // find the last hitting entry before the choosen table
+  // find the last hitting entry before the choosen table (altpred)
   uint8_t penultimate_table = -1;
   for (int i = 0; i < tage_table_used_to_predict; i++) {
     if (tage_table_hit[i]) {
@@ -576,7 +636,7 @@ void train_custom(uint32_t pc, uint8_t outcome) {
     }
   }
 
-  // If the previous entry was also a good result (high confidence and correct), then
+  // If the previous entry (altpred) was also a good result (high confidence and correct), then
   // we probably don't need the later entry taking up space, so decay the entry
   // we used to predict since it probably isn't useful. Decrementing the counters will
   // decrease the confidence level
@@ -585,31 +645,13 @@ void train_custom(uint32_t pc, uint8_t outcome) {
       tage_hit_confidence[penultimate_table] == HIGH_CONF &&
       tage_prediction[penultimate_table] == outcome) {
     
-    uint16_t tage_entry = tage_table[tage_table_used_to_predict][tage_calculated_indices[tage_table_used_to_predict]];
-
-    uint16_t taken = GET_T(tage_entry);
-    uint16_t not_taken = GET_NT(tage_entry);
-
-    // if both are equal, then confidence is already LOW so no need to decay further
-    if (taken > not_taken) {
-      taken--;
-    } else if (not_taken > taken) {
-      not_taken--;
-    }
-
-    tage_table[tage_table_used_to_predict][tage_calculated_indices[tage_table_used_to_predict]] = MAKE_ENTRY(GET_TAG(tage_entry), taken, not_taken);
+    tage_decay_counters(tage_table_used_to_predict, tage_calculated_indices[tage_table_used_to_predict]);
   } else {
-    // Otherwise, just update the choosen entry with the branch direction
+    // Otherwise, just update the choosen entry (provider) with the branch direction
 
     if (tage_table_used_to_predict > 0) {
       // update the hitting entry
-      uint16_t tage_entry = tage_table[tage_table_used_to_predict][tage_calculated_indices[tage_table_used_to_predict]];
-
-      uint16_t taken = GET_T(tage_entry);
-      uint16_t not_taken = GET_NT(tage_entry);
-      tage_update_counters(outcome, &taken, &not_taken);
-
-      tage_table[tage_table_used_to_predict][tage_calculated_indices[tage_table_used_to_predict]] = MAKE_ENTRY(GET_TAG(tage_entry), taken, not_taken);
+      tage_update_counters(outcome, tage_table_used_to_predict, tage_calculated_indices[tage_table_used_to_predict]);
     } else {
       // update the bimodal
       switch(tage_table[0][tage_calculated_indices[0]]) {
@@ -654,33 +696,56 @@ void train_custom(uint32_t pc, uint8_t outcome) {
       }
     } else {
       // update the tage entry
-      uint16_t tage_entry = tage_table[penultimate_table][tage_calculated_indices[penultimate_table]];
-
-      uint16_t taken = GET_T(tage_entry);
-      uint16_t not_taken = GET_NT(tage_entry);
-      tage_update_counters(outcome, &taken, &not_taken);
-      
-      tage_table[penultimate_table][tage_calculated_indices[penultimate_table]] = MAKE_ENTRY(GET_TAG(tage_entry), taken, not_taken);
+      tage_update_counters(outcome, penultimate_table, tage_calculated_indices[penultimate_table]);
     }
   }
 
   // attempt to allocate new entry on mispredict
   if (tage_actual_prediction != outcome) {
+    uint8_t allocation_succeeded = 0;
+
     // find the next table after the hitting table with a low or medium confidence slot
     for (int table_idx = tage_table_used_to_predict + 1; table_idx < tage_num_components; table_idx++) {
       uint16_t table_entry = tage_table[table_idx][tage_calculated_indices[table_idx]];
       
       if (tage_calculate_confidence(GET_T(table_entry), GET_NT(table_entry)) != HIGH_CONF) {
+        uint8_t altpred = outcome;
+        if (table_idx == tage_num_components - 1) {
+          if (penultimate_table == 0) {
+            altpred = tage_table[0][tage_calculated_indices[0]] >= WT ? TAKEN : NOTTAKEN;
+          } else if (penultimate_table > 0 && penultimate_table < tage_num_components) {
+            uint16_t table_entry = tage_table[penultimate_table][tage_calculated_indices[penultimate_table]];
+            altpred = GET_T(table_entry) > GET_NT(table_entry);
+          }
+        }
+
         // overwrite this low/med confidence entry
-        tage_table[table_idx][tage_calculated_indices[table_idx]] = MAKE_ENTRY(tage_calculated_tags[table_idx], outcome, 1 - outcome);
+        if (altpred == TAKEN) {
+          tage_table[table_idx][tage_calculated_indices[table_idx]] = MAKE_ENTRY(tage_calculated_tags[table_idx], 1, 0);
+        } else if (altpred == NOTTAKEN) {
+          tage_table[table_idx][tage_calculated_indices[table_idx]] = MAKE_ENTRY(tage_calculated_tags[table_idx], 0, 1);
+        } else {
+          printf("Error\n");
+        }
+
+        allocation_succeeded = 1;
 
         break;
+      }
+    }
+
+    if (!allocation_succeeded) {
+      for (int table_idx = tage_table_used_to_predict + 1; table_idx < tage_num_components; table_idx++) {
+        tage_decay_counters(table_idx, tage_calculated_indices[table_idx]);
       }
     }
   }
 
   // append to global history
   tage_global_history = (tage_global_history << 1) | outcome;
+
+  // append bottom bit of pc for path history
+  tage_phist = (tage_phist << 1) | (pc & 1);
 }
 
 void
