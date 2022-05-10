@@ -1,5 +1,6 @@
 #!/bin/sh
 cd src
+make clean
 make all
 
 for filename in ../traces/*

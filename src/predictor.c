@@ -743,9 +743,6 @@ void train_custom(uint32_t pc, uint8_t outcome) {
 
   // append to global history
   tage_global_history = (tage_global_history << 1) | outcome;
-
-  // append bottom bit of pc for path history
-  tage_phist = (tage_phist << 1) | (pc & 1);
 }
 
 void
