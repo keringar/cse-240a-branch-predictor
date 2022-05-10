@@ -105,7 +105,7 @@ void tage_calculate_indices_and_tags(uint32_t pc, uint64_t global_history) {
 
   unsigned int tage_t2_history_mask = (1 << tage_t2_history_bits) - 1;
   unsigned int tage_t2_history = global_history & tage_t2_history_mask; // 16 bits. need to fold down to 9 index bits. 2 folds
-  tage_calculated_indices[2] = (pc ^ (tage_t2_history) ^ (tage_t2_history >> tage_table_size_mask)) & tage_table_size_mask;
+  tage_calculated_indices[2] = (pc ^ (tage_t2_history) ^ (tage_t2_history >> tage_table_size_bits)) & tage_table_size_mask;
   tage_calculated_tags[2] = (pc ^ (tage_t2_history) ^ (tage_t2_history >> tage_ti_tag_bits)) & tage_tag_size_mask;
 
   unsigned int tage_t3_history_mask = (1 << tage_t3_history_bits) - 1;
@@ -117,7 +117,7 @@ void tage_calculate_indices_and_tags(uint32_t pc, uint64_t global_history) {
   unsigned int tage_t4_history = global_history & tage_t4_history_mask; // 64 bits. need to fold down to 9 index bits. 8 folds
   tage_calculated_indices[4] = (pc ^ 
                            (tage_t4_history) ^
-                           (tage_t4_history >> tage_table_size_bits) ^
+                           (tage_t4_history >> (1 * tage_table_size_bits)) ^
                            (tage_t4_history >> (2 * tage_table_size_bits)) ^
                            (tage_t4_history >> (3 * tage_table_size_bits)) ^
                            (tage_t4_history >> (4 * tage_table_size_bits)) ^
