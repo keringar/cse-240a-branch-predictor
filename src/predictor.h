@@ -38,6 +38,11 @@ extern const char *bpName[];
 #define WT  2			// predict T, weak taken
 #define ST  3			// predict T, strong taken
 
+// definitions for BATAGE confidence levels
+#define LOW_CONF 2
+#define MED_CONF 1
+#define HIGH_CONF 0
+
 //------------------------------------//
 //      Predictor Configuration       //
 //------------------------------------//
