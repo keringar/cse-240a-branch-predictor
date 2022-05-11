@@ -10,7 +10,7 @@
 #include "predictor.h"
 
 //
-// TODO:Student Information
+// Student Information
 //
 const char *studentName = "Warren Hu";
 const char *studentID   = "A15154462";
@@ -64,6 +64,7 @@ unsigned int* tChooserCounters; // 4096 entries (2^12)
 // each table entry needs to be 14 bits long to maximize use of the 32kbits.
 // base predictor (table 0) is a simple bimodal predictor. needs 2^(15-4) = 2048 entries
 // each of the other 4 tables has2^(15-6) = 512 entries
+// 2048 * 2 + 512 * 4 * (10 + 2 + 2) = 32768 bits
 uint16_t* tage_table[5];
 
 const int tage_ti_tag_bits = 10;
@@ -79,11 +80,12 @@ const int tage_num_components = 5;
 uint64_t tage_global_history; // 64 bits
 uint8_t tage_table_used_to_predict; // 3 bits
 uint8_t tage_table_hit[5]; // 5 bits
-uint8_t tage_hit_confidence[5]; // 10 bits
+uint8_t tage_hit_confidence[5]; // 5*2 bits
 uint8_t tage_prediction[5]; // 5 bits
 uint8_t tage_actual_prediction; // 1 bit
 uint16_t tage_calculated_indices[5]; // 11 + 9*4 = 47 bits
 uint16_t tage_calculated_tags[5]; // 0 + 4*10 = 40 bits
+// total of 64 + 3 + 5 + 10 + 5 + 1 + 47 + 40 = 175 bits
 
 //------------------------------------//
 //        Helper Functions            //
@@ -101,6 +103,9 @@ uint16_t tage_calculated_tags[5]; // 0 + 4*10 = 40 bits
 #define MAKE_ENTRY(tage_tag, tage_t_counter, tage_nt_counter) (((tage_tag & ((1 << tage_ti_tag_bits) - 1)) << (tage_ti_counter_size * 2)) | ((tage_nt_counter & ((1 << tage_ti_counter_size) - 1)) << tage_ti_counter_size) | (tage_t_counter & ((1 << tage_ti_counter_size) - 1)))
 
 // see section 2.1 of https://jilp.org/vol7/v7paper10.pdf for details on the hashing
+// basically just pick two different hash algorithms for the tag and the index. I don't think the
+// exact hashing algorithm is very important, but I just implemented the one from the PPM paper since
+// I think that's what they used in the TAGE paper.
 void tage_calculate_indices_and_tags(uint32_t pc, uint64_t global_history) {
   tage_calculated_indices[0] = pc & ((1 << tage_t0_pc_bits) - 1);
   tage_calculated_tags[0] = 0; // table 0 is tagless bimodal
@@ -187,6 +192,8 @@ void tage_calculate_indices_and_tags(uint32_t pc, uint64_t global_history) {
 }
 
 // see section 4.2 of https://dl.acm.org/doi/fullHtml/10.1145/3226098
+// basically calculates table 1 of the paper where the entries smaller than 0.33 are high confidence,
+// the entries equal to 0.33 are med confidence, and entries higher than 0.33 are low confidence
 uint8_t tage_calculate_confidence(unsigned int taken_counter, unsigned int not_taken_counter) {
   uint8_t med = (taken_counter == (2 * not_taken_counter + 1)) || (not_taken_counter == (2 * taken_counter + 1)) ? 1 : 0;
   uint8_t low = (taken_counter <  (2 * not_taken_counter + 1)) && (not_taken_counter <  (2 * taken_counter + 1)) ? 1 : 0;
@@ -194,6 +201,7 @@ uint8_t tage_calculate_confidence(unsigned int taken_counter, unsigned int not_t
   return med | (low << 1);
 }
 
+// helper function to increment the 2 bit unsigned saturating counters by doing some bit manipulation
 void tage_update_counters(uint8_t outcome, unsigned int table_idx, unsigned int entry_index) {
   uint16_t tage_entry = tage_table[table_idx][entry_index];
 
@@ -218,6 +226,7 @@ void tage_update_counters(uint8_t outcome, unsigned int table_idx, unsigned int 
   tage_table[table_idx][entry_index] = MAKE_ENTRY(GET_TAG(tage_entry), taken, not_taken);
 }
 
+// helper function to decrement the 2 bit unsigned saturating counters by doing some bit manipulation
 void tage_decay_counters(unsigned int table_idx, unsigned int entry_index) {
   uint16_t tage_entry = tage_table[table_idx][entry_index];
 
@@ -541,9 +550,9 @@ void init_custom() {
   tage_global_history = 0;
 }
 
-// see PPM paper for how the indices and hashing work 
-// https://jilp.org/vol7/v7paper10.pdf
 uint8_t custom_predict(uint32_t pc) {
+  // see PPM paper for how the indices and hashing work 
+  // https://jilp.org/vol7/v7paper10.pdf
   tage_calculate_indices_and_tags(pc, tage_global_history);
   
   // reset tage table hit tracker
@@ -585,13 +594,17 @@ uint8_t custom_predict(uint32_t pc) {
           confidence_level = LOW_CONF;
       }
 
+      // update current best confidence and current best prediction
       tage_hit_confidence[i] = confidence_level;
       tage_prediction[i] = prediction;
       tage_table_used_to_predict = 0;
     } else {
-      // use tage tables
+      // tables not equal to zero are the tage tables
       uint16_t tage_entry = tage_table[i][tage_calculated_indices[i]];
       
+      // store the hit confidence and prediction made by this table
+      // note that these values are used only if tage_table_hit is true and they are not valid
+      // if tage_table_hit is not true as it would point to a different prediction in that case
       tage_hit_confidence[i] = tage_calculate_confidence(GET_T(tage_entry), GET_NT(tage_entry));
       tage_prediction[i] = GET_T(tage_entry) > GET_NT(tage_entry);
 
@@ -610,12 +623,13 @@ uint8_t custom_predict(uint32_t pc) {
     }
   }
 
-  // store the final prediction result in order to detect mispredicts
+  // store the final prediction result in order to detect mispredicts in the update function
   tage_actual_prediction = prediction;
   return prediction;
 }
 
 void train_custom(uint32_t pc, uint8_t outcome) {
+  // again see ppm paper
   tage_calculate_indices_and_tags(pc, tage_global_history);
 
   // see table 3 of https://dl.acm.org/doi/fullHtml/10.1145/3226098
@@ -674,7 +688,8 @@ void train_custom(uint32_t pc, uint8_t outcome) {
   }
 
   // If the previous entry is not high confidence, might as well try updating it as well to
-  // to potentially save some space
+  // try and bump up the confidence and potentially save some space later on
+  // basically we want to be able to move back down to a lower table if possible
   if (tage_table_used_to_predict > 0 && tage_hit_confidence[tage_table_used_to_predict] != HIGH_CONF) {
     if (penultimate_table == 0) {
       // update the bimodal
@@ -701,13 +716,18 @@ void train_custom(uint32_t pc, uint8_t outcome) {
   }
 
   // attempt to allocate new entry on mispredict
+  // BATAGE actually uses a controlled allocation throttling mechanism and it seemed to help when
+  // tested locally but did not seem to help the leaderboard rankings... so I removed it...
   if (tage_actual_prediction != outcome) {
     uint8_t allocation_succeeded = 0;
 
     // find the next table after the hitting table with a low or medium confidence slot
+    // TAGE/BATAGE also skips a certain number of entries probabilistically, but moving forward by
+    // one entry each time seems to improve my leaderboard rankings...
     for (int table_idx = tage_table_used_to_predict + 1; table_idx < tage_num_components; table_idx++) {
       uint16_t table_entry = tage_table[table_idx][tage_calculated_indices[table_idx]];
       
+      // Check if we can overwrite this entry
       if (tage_calculate_confidence(GET_T(table_entry), GET_NT(table_entry)) != HIGH_CONF) {
         uint8_t altpred = outcome;
         if (table_idx == tage_num_components - 1) {
@@ -731,11 +751,8 @@ void train_custom(uint32_t pc, uint8_t outcome) {
         allocation_succeeded = 1;
 
         break;
-      }
-    }
-
-    if (!allocation_succeeded) {
-      for (int table_idx = tage_table_used_to_predict + 1; table_idx < tage_num_components; table_idx++) {
+      } else {
+        // if we failed to allocate, then decay the entries as it might be wrong or useless
         tage_decay_counters(table_idx, tage_calculated_indices[table_idx]);
       }
     }
