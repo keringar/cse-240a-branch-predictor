@@ -75,8 +75,6 @@ const int tage_t3_history_bits = 27; // <= 36 bits
 const int tage_t4_history_bits = 63; // <= 64 bits
 const int tage_table_size_bits = 9;
 const int tage_num_components = 5;
-const int tage_MINAP = 5;
-const int tage_CATMAX = 4098;
 
 uint64_t tage_global_history; // 64 bits
 uint8_t tage_table_used_to_predict; // 3 bits
@@ -86,7 +84,6 @@ uint8_t tage_prediction[5]; // 5 bits
 uint8_t tage_actual_prediction; // 1 bit
 uint16_t tage_calculated_indices[5]; // 11 + 9*4 = 47 bits
 uint16_t tage_calculated_tags[5]; // 0 + 4*10 = 40 bits
-uint8_t tage_CAT_ctr;
 
 //------------------------------------//
 //        Helper Functions            //
@@ -542,7 +539,6 @@ void init_custom() {
   }
 
   tage_global_history = 0;
-  tage_CAT_ctr = 0;
 }
 
 // see PPM paper for how the indices and hashing work 
@@ -705,57 +701,42 @@ void train_custom(uint32_t pc, uint8_t outcome) {
   }
 
   // attempt to allocate new entry on mispredict
-  if (tage_actual_prediction != outcome && tage_table_used_to_predict != tage_num_components - 1) {
-    int r = rand() % tage_MINAP - 1;
-    if (r >= ((tage_CAT_ctr * tage_MINAP) / (tage_CATMAX + 1))) {
-      unsigned int mhc = 0;
-      unsigned int skip = 1 + (rand() % (tage_num_components - tage_table_used_to_predict - 1));
+  if (tage_actual_prediction != outcome) {
+    uint8_t allocation_succeeded = 0;
 
-      // find the next table after the hitting table with a low or medium confidence slot
-      for (int table_idx = tage_table_used_to_predict + skip; table_idx < tage_num_components; table_idx++) {
-        uint16_t table_entry = tage_table[table_idx][tage_calculated_indices[table_idx]];
-        
-        if (tage_calculate_confidence(GET_T(table_entry), GET_NT(table_entry)) != HIGH_CONF) {
-          // found slot, overwrite
-
-          uint8_t altpred = outcome;
-          if (table_idx == tage_num_components - 1) {
-            if (penultimate_table == 0) {
-              altpred = tage_table[0][tage_calculated_indices[0]] >= WT ? TAKEN : NOTTAKEN;
-            } else if (penultimate_table > 0 && penultimate_table < tage_num_components) {
-              uint16_t table_entry = tage_table[penultimate_table][tage_calculated_indices[penultimate_table]];
-              altpred = GET_T(table_entry) > GET_NT(table_entry);
-            }
-          }
-
-          // overwrite this low/med confidence entry
-          if (altpred == TAKEN) {
-            tage_table[table_idx][tage_calculated_indices[table_idx]] = MAKE_ENTRY(tage_calculated_tags[table_idx], 1, 0);
-          } else if (altpred == NOTTAKEN) {
-            tage_table[table_idx][tage_calculated_indices[table_idx]] = MAKE_ENTRY(tage_calculated_tags[table_idx], 0, 1);
-          } else {
-            printf("Error\n");
-          }
-
-          tage_CAT_ctr = tage_CAT_ctr + 3 - 4 * mhc;
-          tage_CAT_ctr = tage_CAT_ctr > tage_CATMAX ? tage_CATMAX : (tage_CAT_ctr < 0 ? 0 : tage_CAT_ctr);
-
-          break;
-        } else {
-          // decay with probability 1/4
-          if (rand() % 4 == 0) {
-            tage_decay_counters(table_idx, tage_calculated_indices[table_idx]);
-          }
-
-          // determine if in moderate confidence state
-          if (tage_calculate_confidence(GET_T(table_entry), GET_NT(table_entry)) == HIGH_CONF) {
-            if (GET_T(table_entry) > 0 && GET_T(table_entry) < 4) {
-              if (GET_NT(table_entry) > 0 && GET_NT(table_entry) < 4) {
-                mhc++;
-              }
-            }
+    // find the next table after the hitting table with a low or medium confidence slot
+    for (int table_idx = tage_table_used_to_predict + 1; table_idx < tage_num_components; table_idx++) {
+      uint16_t table_entry = tage_table[table_idx][tage_calculated_indices[table_idx]];
+      
+      if (tage_calculate_confidence(GET_T(table_entry), GET_NT(table_entry)) != HIGH_CONF) {
+        uint8_t altpred = outcome;
+        if (table_idx == tage_num_components - 1) {
+          if (penultimate_table == 0) {
+            altpred = tage_table[0][tage_calculated_indices[0]] >= WT ? TAKEN : NOTTAKEN;
+          } else if (penultimate_table > 0 && penultimate_table < tage_num_components) {
+            uint16_t table_entry = tage_table[penultimate_table][tage_calculated_indices[penultimate_table]];
+            altpred = GET_T(table_entry) > GET_NT(table_entry);
           }
         }
+
+        // overwrite this low/med confidence entry
+        if (altpred == TAKEN) {
+          tage_table[table_idx][tage_calculated_indices[table_idx]] = MAKE_ENTRY(tage_calculated_tags[table_idx], 1, 0);
+        } else if (altpred == NOTTAKEN) {
+          tage_table[table_idx][tage_calculated_indices[table_idx]] = MAKE_ENTRY(tage_calculated_tags[table_idx], 0, 1);
+        } else {
+          printf("Error\n");
+        }
+
+        allocation_succeeded = 1;
+
+        break;
+      }
+    }
+
+    if (!allocation_succeeded) {
+      for (int table_idx = tage_table_used_to_predict + 1; table_idx < tage_num_components; table_idx++) {
+        tage_decay_counters(table_idx, tage_calculated_indices[table_idx]);
       }
     }
   }
