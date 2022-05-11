@@ -751,8 +751,12 @@ void train_custom(uint32_t pc, uint8_t outcome) {
         allocation_succeeded = 1;
 
         break;
-      } else {
-        // if we failed to allocate, then decay the entries as it might be wrong or useless
+      }
+    }
+
+    // if we failed to allocate, then decay all the previous counters as they may be useless
+    if (!allocation_succeeded) {
+      for (int table_idx = tage_table_used_to_predict + 1; table_idx < tage_num_components; table_idx++) {
         tage_decay_counters(table_idx, tage_calculated_indices[table_idx]);
       }
     }
