@@ -70,9 +70,9 @@ uint16_t* tage_table[5];
 const int tage_ti_tag_bits = 10;
 const int tage_ti_counter_size = 2;
 const int tage_t0_pc_bits = 11;
-const int tage_t1_history_bits = 5;  // <= 9 bits
-const int tage_t2_history_bits = 18; // <= 18 bits
-const int tage_t3_history_bits = 27; // <= 36 bits
+const int tage_t1_history_bits = 7;  // <= 9 bits
+const int tage_t2_history_bits = 15; // <= 18 bits
+const int tage_t3_history_bits = 31; // <= 36 bits
 const int tage_t4_history_bits = 63; // <= 64 bits
 const int tage_table_size_bits = 9;
 const int tage_num_components = 5;
