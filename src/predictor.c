@@ -62,20 +62,23 @@ unsigned int* tChooserCounters; // 4096 entries (2^12)
 //                     a 2 bit saturating taken unsigned counter
 //                     a 2 bit saturating not taken unsigned counter
 // each table entry needs to be 14 bits long to maximize use of the 32kbits.
-// base predictor (table 0) is a simple bimodal predictor. needs 2^(15-4) = 2048 entries
+// base predictor (table 0) is a simple bimodal predictor. needs 2^(10) = 1024 entries
+// base predictor uses 3 bit unsigned saturating counters
 // each of the other 4 tables has2^(15-6) = 512 entries
-// 2048 * 2 + 512 * 4 * (10 + 2 + 2) = 32768 bits
+// 1024 * 3 + 512 * 4 * (10 + 2 + 2) = 31744 < 32768 bits
 uint16_t* tage_table[5];
 
 const int tage_ti_tag_bits = 10;
 const int tage_ti_counter_size = 2;
-const int tage_t0_pc_bits = 11;
+const int tage_t0_pc_bits = 10;
 const int tage_t1_history_bits = 5;  // <= 9 bits
 const int tage_t2_history_bits = 18; // <= 18 bits
 const int tage_t3_history_bits = 27; // <= 36 bits
 const int tage_t4_history_bits = 63; // <= 64 bits
 const int tage_table_size_bits = 9;
 const int tage_num_components = 5;
+const int tage_MINAP = 100;
+const int tage_CATMAX = 16392;
 
 uint64_t tage_global_history; // 64 bits
 uint8_t tage_table_used_to_predict; // 3 bits
@@ -85,6 +88,7 @@ uint8_t tage_prediction[5]; // 5 bits
 uint8_t tage_actual_prediction; // 1 bit
 uint16_t tage_calculated_indices[5]; // 11 + 9*4 = 47 bits
 uint16_t tage_calculated_tags[5]; // 0 + 4*10 = 40 bits
+uint16_t tage_CAT_ctr;
 // total of 64 + 3 + 5 + 10 + 5 + 1 + 47 + 40 = 175 bits
 
 //------------------------------------//
@@ -548,6 +552,7 @@ void init_custom() {
   }
 
   tage_global_history = 0;
+  tage_CAT_ctr = 0;
 }
 
 uint8_t custom_predict(uint32_t pc) {
@@ -572,26 +577,37 @@ uint8_t custom_predict(uint32_t pc) {
       // table 0 is a simple bimodal predictor
       // see table 1 of https://dl.acm.org/doi/fullHtml/10.1145/3226098 for details of confidence levels
       switch(tage_table[0][tage_calculated_indices[0]]) {
-        case WN:
+        case 0:
+        case 1:
+          confidence_level = HIGH_CONF;
           prediction = NOTTAKEN;
-          confidence_level = LOW_CONF;
           break;
-        case SN:
+        case 2:
+          confidence_level = MED_CONF;
           prediction = NOTTAKEN;
-          confidence_level = MED_CONF;
           break;
-        case WT:
-          prediction = TAKEN;
+        case 3:
           confidence_level = LOW_CONF;
+          prediction = NOTTAKEN;
           break;
-        case ST:
+        case 4:
+          confidence_level = LOW_CONF;
           prediction = TAKEN;
+          break;
+        case 5:
           confidence_level = MED_CONF;
+          prediction = TAKEN;
+          break;
+        case 6:
+        case 7:
+          confidence_level = HIGH_CONF;
+          prediction = TAKEN;
           break;
         default:
           printf("Warning: Undefined state of entry in TAGE t0!\n");
           prediction = NOTTAKEN;
           confidence_level = LOW_CONF;
+          break;
       }
 
       // update current best confidence and current best prediction
@@ -669,17 +685,19 @@ void train_custom(uint32_t pc, uint8_t outcome) {
     } else {
       // update the bimodal
       switch(tage_table[0][tage_calculated_indices[0]]) {
-        case WN:
-          tage_table[0][tage_calculated_indices[0]] = (outcome==TAKEN)?WT:SN;
+        case 0:
+          tage_table[0][tage_calculated_indices[0]] += (outcome == TAKEN) ? 1 : 0;
           break;
-        case SN:
-          tage_table[0][tage_calculated_indices[0]] = (outcome==TAKEN)?WN:SN;
+        case 1:
+        case 2:
+        case 3:
+        case 4:
+        case 5:
+        case 6:
+          tage_table[0][tage_calculated_indices[0]] += (outcome == TAKEN) ? 1 : -1;
           break;
-        case WT:
-          tage_table[0][tage_calculated_indices[0]] = (outcome==TAKEN)?ST:WN;
-          break;
-        case ST:
-          tage_table[0][tage_calculated_indices[0]] = (outcome==TAKEN)?ST:WT;
+        case 7:
+          tage_table[0][tage_calculated_indices[0]] += (outcome == TAKEN) ? 0 : -1;
           break;
         default:
           printf("Warning: Undefined state of entry in TAGE table 0 BHT!\n");
@@ -694,17 +712,19 @@ void train_custom(uint32_t pc, uint8_t outcome) {
     if (penultimate_table == 0) {
       // update the bimodal
       switch(tage_table[0][tage_calculated_indices[0]]) {
-        case WN:
-          tage_table[0][tage_calculated_indices[0]] = (outcome==TAKEN)?WT:SN;
+        case 0:
+          tage_table[0][tage_calculated_indices[0]] += (outcome == TAKEN) ? 1 : 0;
           break;
-        case SN:
-          tage_table[0][tage_calculated_indices[0]] = (outcome==TAKEN)?WN:SN;
+        case 1:
+        case 2:
+        case 3:
+        case 4:
+        case 5:
+        case 6:
+          tage_table[0][tage_calculated_indices[0]] += (outcome == TAKEN) ? 1 : -1;
           break;
-        case WT:
-          tage_table[0][tage_calculated_indices[0]] = (outcome==TAKEN)?ST:WN;
-          break;
-        case ST:
-          tage_table[0][tage_calculated_indices[0]] = (outcome==TAKEN)?ST:WT;
+        case 7:
+          tage_table[0][tage_calculated_indices[0]] += (outcome == TAKEN) ? 0 : -1;
           break;
         default:
           printf("Warning: Undefined state of entry in TAGE table 0 BHT!\n");
@@ -718,46 +738,57 @@ void train_custom(uint32_t pc, uint8_t outcome) {
   // attempt to allocate new entry on mispredict
   // BATAGE actually uses a controlled allocation throttling mechanism and it seemed to help when
   // tested locally but did not seem to help the leaderboard rankings... so I removed it...
-  if (tage_actual_prediction != outcome) {
-    uint8_t allocation_succeeded = 0;
+  if (tage_actual_prediction != outcome && tage_table_used_to_predict != tage_num_components - 1) {
+    int r = rand() % tage_MINAP - 1;
+    if (r >= ((tage_CAT_ctr * tage_MINAP) / (tage_CATMAX + 1))) {
+      unsigned int mhc = 0;
+      unsigned int skip = 1 + (rand() % (tage_num_components - tage_table_used_to_predict - 1));
 
-    // find the next table after the hitting table with a low or medium confidence slot
-    // TAGE/BATAGE also skips a certain number of entries probabilistically, but moving forward by
-    // one entry each time seems to improve my leaderboard rankings...
-    for (int table_idx = tage_table_used_to_predict + 1; table_idx < tage_num_components; table_idx++) {
-      uint16_t table_entry = tage_table[table_idx][tage_calculated_indices[table_idx]];
-      
-      // Check if we can overwrite this entry
-      if (tage_calculate_confidence(GET_T(table_entry), GET_NT(table_entry)) != HIGH_CONF) {
-        uint8_t altpred = outcome;
-        if (table_idx == tage_num_components - 1) {
-          if (penultimate_table == 0) {
-            altpred = tage_table[0][tage_calculated_indices[0]] >= WT ? TAKEN : NOTTAKEN;
-          } else if (penultimate_table > 0 && penultimate_table < tage_num_components) {
-            uint16_t table_entry = tage_table[penultimate_table][tage_calculated_indices[penultimate_table]];
-            altpred = GET_T(table_entry) > GET_NT(table_entry);
+      // find the next table after the hitting table with a low or medium confidence slot
+      for (int table_idx = tage_table_used_to_predict + skip; table_idx < tage_num_components; table_idx++) {
+        uint16_t table_entry = tage_table[table_idx][tage_calculated_indices[table_idx]];
+
+        if (tage_calculate_confidence(GET_T(table_entry), GET_NT(table_entry)) != HIGH_CONF) {
+          // found slot, overwrite
+
+          uint8_t altpred = outcome;
+          if (table_idx == tage_num_components - 1) {
+            if (penultimate_table == 0) {
+              altpred = tage_table[0][tage_calculated_indices[0]] >= WT ? TAKEN : NOTTAKEN;
+            } else if (penultimate_table > 0 && penultimate_table < tage_num_components) {
+              uint16_t table_entry = tage_table[penultimate_table][tage_calculated_indices[penultimate_table]];
+              altpred = GET_T(table_entry) > GET_NT(table_entry);
+            }
+          }
+
+          // overwrite this low/med confidence entry
+          if (altpred == TAKEN) {
+            tage_table[table_idx][tage_calculated_indices[table_idx]] = MAKE_ENTRY(tage_calculated_tags[table_idx], 1, 0);
+          } else if (altpred == NOTTAKEN) {
+            tage_table[table_idx][tage_calculated_indices[table_idx]] = MAKE_ENTRY(tage_calculated_tags[table_idx], 0, 1);
+          } else {
+            printf("Error\n");
+          }
+
+          tage_CAT_ctr = tage_CAT_ctr + 3 - 4 * mhc;
+          tage_CAT_ctr = tage_CAT_ctr > tage_CATMAX ? tage_CATMAX : (tage_CAT_ctr < 0 ? 0 : tage_CAT_ctr);
+
+          break;
+        } else {
+          // decay with probability 1/4
+          if (rand() % 2 == 0) {
+            tage_decay_counters(table_idx, tage_calculated_indices[table_idx]);
+          }
+
+          // determine if in moderate confidence state
+          if (tage_calculate_confidence(GET_T(table_entry), GET_NT(table_entry)) == HIGH_CONF) {
+            if (GET_T(table_entry) > 0 && GET_T(table_entry) < 4) {
+              if (GET_NT(table_entry) > 0 && GET_NT(table_entry) < 4) {
+                mhc++;
+              }
+            }
           }
         }
-
-        // overwrite this low/med confidence entry
-        if (altpred == TAKEN) {
-          tage_table[table_idx][tage_calculated_indices[table_idx]] = MAKE_ENTRY(tage_calculated_tags[table_idx], 1, 0);
-        } else if (altpred == NOTTAKEN) {
-          tage_table[table_idx][tage_calculated_indices[table_idx]] = MAKE_ENTRY(tage_calculated_tags[table_idx], 0, 1);
-        } else {
-          printf("Error\n");
-        }
-
-        allocation_succeeded = 1;
-
-        break;
-      }
-    }
-
-    // if we failed to allocate, then decay all the previous counters as they may be useless
-    if (!allocation_succeeded) {
-      for (int table_idx = tage_table_used_to_predict + 1; table_idx < tage_num_components; table_idx++) {
-        tage_decay_counters(table_idx, tage_calculated_indices[table_idx]);
       }
     }
   }
